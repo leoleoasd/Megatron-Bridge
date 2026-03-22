@@ -116,9 +116,6 @@ no-build-isolation-package = [
 ]
 prerelease = "allow"
 override-dependencies = [
-    "torch; sys_platform == 'never'",
-    "torchvision; sys_platform == 'never'",
-    "triton; sys_platform == 'never'",
     "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@287770466f0f4433052260a765db5ff7b8be1320",
     "mlflow>=3.5.0",
     "cryptography>=43.0.0,<47",
