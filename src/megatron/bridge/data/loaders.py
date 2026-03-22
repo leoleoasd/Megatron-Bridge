@@ -125,11 +125,19 @@ def get_train_valid_test_num_samples(cfg: ConfigContainer) -> tuple[int, int, in
         # Otherwise fallback to calculating samples based on iterations and global batch size
         train_samples = cfg.train.train_iters * cfg.train.global_batch_size
 
-    if cfg.validation.eval_interval:
+    # Check if validation/test are disabled via dataset config
+    do_validation = getattr(cfg.dataset, "do_validation", True)
+    do_test = getattr(cfg.dataset, "do_test", True)
+
+    if do_validation and cfg.validation.eval_interval:
         eval_iters = (cfg.train.train_iters // cfg.validation.eval_interval + 1) * cfg.validation.eval_iters
     else:
         eval_iters = 0
-    test_iters = cfg.validation.eval_iters
+
+    if do_test:
+        test_iters = cfg.validation.eval_iters
+    else:
+        test_iters = 0
 
     return (
         train_samples,
