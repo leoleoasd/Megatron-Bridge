@@ -76,6 +76,8 @@ dependencies = [
   "mlflow>=3.5.0",
   "comet-ml>=3.50.0",
   "torch>=2.8.0",
+  "apex",
+  "nvidia-modelopt[hf]>=0.43.0rc1",
 ]
 description = "Megatron Bridge: Training Recipes for Megatron-based LLM and VLM models"
 dynamic = ["version"]
@@ -113,6 +115,7 @@ no-build-isolation-package = [
   "nv-grouped-gemm",
   "flash_mla",
   "flash-linear-attention",
+  "apex",
 ]
 override-dependencies = [
   "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@287770466f0f4433052260a765db5ff7b8be1320",
@@ -131,6 +134,7 @@ url = "https://pypi.nvidia.com"
 megatron-core = {path = "3rdparty/Megatron-LM/", editable = true}
 nvidia-modelopt = {index = "nvidia"}
 nvidia-resiliency-ext = {git = "https://github.com/NVIDIA/nvidia-resiliency-ext.git", rev = "v0.5.0"}
+apex = {git = "https://github.com/NVIDIA/apex.git", rev = "10417aceddd7d5d05d7cbf7b0fc2daad1105f8b4"}
 
 [project.optional-dependencies]
 recipes = [

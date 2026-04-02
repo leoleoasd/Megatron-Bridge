@@ -44,11 +44,30 @@ Data Format:
 """
 
 import argparse
+import logging
 import os
+from dataclasses import fields
 from pathlib import Path
 
 import torch
 from tqdm import tqdm
+
+# Configure logging with timestamp
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=logging.INFO,
+)
+
+# Silence noisy loggers
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+logging.getLogger("megatron.core.distributed.param_and_grad_buffer").setLevel(logging.WARNING)
+
+# Enable debug logging for checkpointing
+logging.getLogger("megatron.bridge.training.checkpointing").setLevel(logging.DEBUG)
+logging.getLogger("megatron.core.dist_checkpointing").setLevel(logging.DEBUG)
 
 from megatron.bridge import AutoBridge
 from megatron.bridge.data.datasets.packed_sequence import PackedSequenceSpecs
@@ -67,6 +86,9 @@ from megatron.bridge.training.config import (
 from megatron.bridge.training.finetune import finetune
 from megatron.bridge.training.gpt_step import forward_step
 from megatron.bridge.training.mixed_precision import bf16_mixed
+from megatron.core.model_parallel_config import ModelParallelConfig
+from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.training.argument_utils import ArgumentGroupFactory
 
 
 class TqdmProgressCallback(Callback):
@@ -236,14 +258,14 @@ def parse_args() -> argparse.Namespace:
     data_group.add_argument(
         "--seq-length",
         type=int,
-        default=4096,
-        help="Maximum sequence length (default: 4096)",
+        default=None,
+        help="Maximum sequence length (default: use model's max_position_embeddings)",
     )
     data_group.add_argument(
-        "--chat-format",
-        action="store_true",
-        default=True,
-        help="Use chat format for data (messages format)",
+        "--chat-template",
+        type=str,
+        default=None,
+        help="Path to a Jinja2 chat template file to override the tokenizer's default chat template",
     )
 
     # Training arguments
@@ -291,44 +313,96 @@ def parse_args() -> argparse.Namespace:
         help="Learning rate warmup iterations (default: 50)",
     )
 
-    # Parallelism arguments
-    parallel_group = parser.add_argument_group("Parallelism")
-    parallel_group.add_argument(
-        "--tensor-parallel-size",
-        type=int,
-        default=1,
-        help="Tensor parallel size (default: 1)",
-    )
-    parallel_group.add_argument(
-        "--pipeline-parallel-size",
-        type=int,
-        default=1,
-        help="Pipeline parallel size (default: 1)",
-    )
-    parallel_group.add_argument(
-        "--context-parallel-size",
-        type=int,
-        default=1,
-        help="Context parallel size for long sequences (default: 1)",
-    )
-    parallel_group.add_argument(
-        "--expert-parallel-size",
-        type=int,
-        default=1,
-        help="Expert parallel size for MoE models (default: 1)",
-    )
-    parallel_group.add_argument(
-        "--sequence-parallel",
-        action="store_true",
-        default=False,
-        help="Enable sequence parallelism (requires TP > 1)",
-    )
-    parallel_group.add_argument(
-        "--virtual-pipeline-parallel-size",
-        type=int,
-        default=None,
-        help="Virtual pipeline parallel size for interleaved scheduling",
-    )
+    # Parallelism and model arguments - auto-generated from TransformerConfig
+    # TransformerConfig inherits from ModelParallelConfig, so includes all parallelism settings
+    # Uses ArgumentGroupFactory to automatically create args from the dataclass
+    # Exclude list copied from _add_network_size_args in megatron/training/arguments.py
+    transformer_exclude = [
+        # cannot provide callables over CLI
+        "timers",
+        "finalize_model_grads_func",
+        "grad_scale_func",
+        "no_sync_func",
+        "grad_sync_func",
+        "param_sync_func",
+        "_cpu_offloading_context",
+        "init_method",
+        "output_layer_init_method",
+        "embedding_init_method",
+        "activation_func",
+        # types affect docstring
+        "pipeline_model_parallel_layout",
+        "window_size",
+        "window_attn_skip_freq",
+        "no_rope_freq",
+        "moe_layer_freq",
+        "linear_attention_freq",
+        "moe_router_load_balancing_type",
+        "moe_aux_loss_coeff",
+        "cp_comm_type",
+        "cuda_graph_scope",
+        # no CLI argument exists for these
+        "virtual_pipeline_model_parallel_size",
+        "params_dtype",
+        "enable_autocast",
+        "autocast_dtype",
+        "num_microbatches_with_partial_activation_checkpoints",
+        "tp_comm_overlap_disable_qkv",
+        "tp_comm_overlap_disable_fc1",
+        "pipeline_dtype",
+        "variable_seq_lengths",
+        "batch_p2p_comm",
+        "batch_p2p_sync",
+        "deallocate_pipeline_outputs",
+        "cpu_offloading",
+        "cpu_offloading_activations",
+        "cpu_offloading_weights",
+        "cpu_offloading_double_buffering",
+        "num_layers_in_first_pipeline_stage",
+        "num_layers_in_last_pipeline_stage",
+        "softmax_scale",
+        "gated_linear_unit",
+        "bias_activation_fusion",
+        "activation_func_fp8_input_store",
+        "test_mode",
+        "memory_efficient_layer_norm",
+        "fused_single_qkv_rope",
+        "fp8_dot_product_attention",
+        "fp8_multi_head_attention",
+        "tp_only_amax_red",
+        "use_kitchen",
+        "moe_token_dropping",
+        "cuda_graph_use_single_mempool",
+        "cuda_graph_retain_backward_graph",
+        "disable_parameter_transpose_cache",
+        "inference_sampling_seed",
+        "use_inference_optimized_layers",
+        "heterogeneous_block_specs",
+        "hetereogenous_dist_checkpoint",
+        "quant_recipe",
+        # deprecated and no CLI arg exists
+        "tp_comm_atomic_ag",
+        "tp_comm_atomic_rs",
+        "moe_router_topk_limited_devices",
+        # already generated by another config
+        "inference_rng_tracker",
+        "use_te_rng_tracker",
+        "log_max_attention_logit",
+        "barrier_with_L1_time",
+        # args uses same var with a different name
+        "num_moe_experts",
+        "fp8_param",
+        # incompatible defaults in dataclass
+        "gradient_accumulation_fusion",
+        "overlap_p2p_comm",
+        "attention_softmax_in_fp32",
+        "masked_softmax_fusion",
+        "persist_layer_norm",
+        "bias_dropout_fusion",
+        "apply_rope_fusion",
+    ]
+    transformer_factory = ArgumentGroupFactory(TransformerConfig, exclude=transformer_exclude)
+    transformer_factory.build_group(parser, "Model & Parallelism")
 
     # Checkpoint arguments
     ckpt_group = parser.add_argument_group("Checkpointing")
@@ -353,12 +427,6 @@ def parse_args() -> argparse.Namespace:
 
     # Logging arguments
     log_group = parser.add_argument_group("Logging")
-    log_group.add_argument(
-        "--log-interval",
-        type=int,
-        default=1,
-        help="Log every N iterations (default: 1)",
-    )
     log_group.add_argument(
         "--wandb-project",
         type=str,
@@ -396,23 +464,10 @@ def parse_args() -> argparse.Namespace:
     # Advanced arguments
     advanced_group = parser.add_argument_group("Advanced")
     advanced_group.add_argument(
-        "--recompute-granularity",
-        type=str,
-        default=None,
-        choices=["full", "selective", None],
-        help="Activation recomputation granularity for memory savings",
-    )
-    advanced_group.add_argument(
         "--seed",
         type=int,
         default=5678,
         help="Random seed (default: 5678)",
-    )
-    advanced_group.add_argument(
-        "--bf16",
-        action="store_true",
-        default=True,
-        help="Use BF16 mixed precision (default: True)",
     )
     advanced_group.add_argument(
         "--no-tqdm",
@@ -444,27 +499,28 @@ def create_sft_config(args: argparse.Namespace) -> ConfigContainer:
     )
     model_provider = bridge.to_megatron_provider(load_weights=True)
 
-    # Configure parallelism
-    model_provider.tensor_model_parallel_size = args.tensor_parallel_size
-    model_provider.pipeline_model_parallel_size = args.pipeline_parallel_size
-    model_provider.context_parallel_size = args.context_parallel_size
-    model_provider.sequence_parallel = args.sequence_parallel
-    model_provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_parallel_size
-
-    # Configure expert parallelism for MoE models
-    if args.expert_parallel_size > 1:
-        model_provider.expert_model_parallel_size = args.expert_parallel_size
+    # Copy all ModelParallelConfig fields from args to model_provider
+    # This includes parallelism settings, precision, communication overlaps, etc.
+    for field in fields(ModelParallelConfig):
+        field_name = field.name
+        if hasattr(args, field_name):
+            arg_value = getattr(args, field_name)
+            if arg_value is not None and hasattr(model_provider, field_name):
+                setattr(model_provider, field_name, arg_value)
 
     # Set pipeline dtype if PP > 1
-    if args.pipeline_parallel_size > 1:
+    if args.pipeline_model_parallel_size > 1:
         model_provider.pipeline_dtype = torch.bfloat16
 
-    # Configure sequence length
-    model_provider.seq_length = args.seq_length
+    model_provider.calculate_per_token_loss = True
 
-    # Configure recomputation if specified
+    # Configure recomputation if specified (from TransformerConfig)
     if args.recompute_granularity:
         model_provider.recompute_granularity = args.recompute_granularity
+    if args.recompute_method:
+        model_provider.recompute_method = args.recompute_method
+    if args.recompute_num_layers is not None:
+        model_provider.recompute_num_layers = args.recompute_num_layers
 
     # Determine data path
     data_path = Path(args.data_path)
@@ -476,10 +532,18 @@ def create_sft_config(args: argparse.Namespace) -> ConfigContainer:
         dataset_root = data_path
 
     dataset_kwargs = {}
-    # Add chat-specific kwargs
-    if args.chat_format:
-        dataset_kwargs["chat"] = True
-        dataset_kwargs["use_hf_tokenizer_chat_template"] = True
+    # Always use chat format with HF tokenizer chat template
+    dataset_kwargs["chat"] = True
+    dataset_kwargs["use_hf_tokenizer_chat_template"] = True
+
+    # Load custom chat template if provided
+    chat_template_content = None
+    if args.chat_template:
+        chat_template_path = Path(args.chat_template)
+        if not chat_template_path.exists():
+            raise FileNotFoundError(f"Chat template file not found: {args.chat_template}")
+        with open(chat_template_path, "r") as f:
+            chat_template_content = f.read()
 
     # Create optimizer and scheduler config
     opt_cfg, scheduler_cfg = distributed_fused_adam_with_cosine_annealing(
@@ -494,6 +558,12 @@ def create_sft_config(args: argparse.Namespace) -> ConfigContainer:
     wandb_project = args.wandb_project
     wandb_exp_name = args.wandb_run_name
     wandb_entity = args.wandb_entity
+
+    # Determine sequence length: use provided value or model's max_position_embeddings
+    seq_length = args.seq_length if args.seq_length is not None else model_provider.seq_length
+
+    # Update model provider's seq_length to match dataset (required for config validation)
+    model_provider.seq_length = seq_length
 
     # Create the config container
     cfg = ConfigContainer(
@@ -511,7 +581,7 @@ def create_sft_config(args: argparse.Namespace) -> ConfigContainer:
         scheduler=scheduler_cfg,
         dataset=FinetuningDatasetConfig(
             dataset_root=str(dataset_root),
-            seq_length=args.seq_length,
+            seq_length=seq_length,
             seed=args.seed,
             memmap_workers=20,
             dataset_kwargs=dataset_kwargs,
@@ -520,7 +590,7 @@ def create_sft_config(args: argparse.Namespace) -> ConfigContainer:
             dataloader_type="batch",
         ),
         logger=LoggerConfig(
-            log_interval=args.log_interval,
+            log_interval=1,
             tensorboard_dir=str(tensorboard_dir),
             log_timers_to_tensorboard=True,
             wandb_project=wandb_project,
@@ -530,6 +600,7 @@ def create_sft_config(args: argparse.Namespace) -> ConfigContainer:
         tokenizer=TokenizerConfig(
             tokenizer_type="HuggingFaceTokenizer",
             tokenizer_model=args.model,
+            chat_template=chat_template_content,
         ),
         checkpoint=CheckpointConfig(
             save_interval=args.save_interval,
@@ -538,6 +609,11 @@ def create_sft_config(args: argparse.Namespace) -> ConfigContainer:
             pretrained_checkpoint=None,  # We're loading weights directly via AutoBridge
             ckpt_format="torch_dist",
             fully_parallel_save=True,
+            async_save=True,
+            use_persistent_ckpt_worker=True,
+            ckpt_assume_constant_structure=True,  # Cache checkpoint structure for faster saves
+            save_optim=False,  # Don't save optimizer state (much smaller checkpoints)
+            save_rng=False,  # Don't save RNG state
         ),
         mixed_precision=bf16_mixed() if args.bf16 else None,
         rng=RNGConfig(seed=args.seed),
@@ -605,9 +681,13 @@ def main() -> None:
         print(f"Training for {args.epochs} epochs = {args.train_iters} iterations")
 
     # Validate parallelism settings
-    if args.sequence_parallel and args.tensor_parallel_size <= 1:
-        print("Warning: --sequence-parallel requires --tensor-parallel-size > 1. Disabling sequence parallelism.")
+    if args.sequence_parallel and args.tensor_model_parallel_size <= 1:
+        print("Warning: --sequence-parallel requires --tensor-model-parallel-size > 1. Disabling sequence parallelism.")
         args.sequence_parallel = False
+
+    # Set CUDA_DEVICE_MAX_CONNECTIONS for sequence parallelism speedup
+    if args.sequence_parallel:
+        os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -623,7 +703,7 @@ def main() -> None:
         callbacks.append(
             TqdmProgressCallback(
                 total_iters=args.train_iters,
-                log_interval=args.log_interval,
+                log_interval=1,
             )
         )
 
@@ -632,16 +712,17 @@ def main() -> None:
         wandb_config = {
             "model": args.model,
             "data_path": args.data_path,
-            "seq_length": args.seq_length,
+            "seq_length": config.dataset.seq_length,
             "global_batch_size": args.global_batch_size,
             "micro_batch_size": args.micro_batch_size,
             "epochs": args.epochs,
             "train_iters": args.train_iters,
             "learning_rate": args.lr,
-            "tensor_parallel_size": args.tensor_parallel_size,
-            "pipeline_parallel_size": args.pipeline_parallel_size,
+            "tensor_model_parallel_size": args.tensor_model_parallel_size,
+            "pipeline_model_parallel_size": args.pipeline_model_parallel_size,
             "context_parallel_size": args.context_parallel_size,
-            "expert_parallel_size": args.expert_parallel_size,
+            "expert_model_parallel_size": args.expert_model_parallel_size,
+            "expert_tensor_parallel_size": args.expert_tensor_parallel_size,
             "sequence_parallel": args.sequence_parallel,
         }
         callbacks.append(
@@ -658,17 +739,18 @@ def main() -> None:
     print("=" * 60)
     print(f"Model: {args.model}")
     print(f"Data path: {args.data_path}")
-    print(f"Sequence length: {args.seq_length}")
+    print(f"Sequence length: {config.dataset.seq_length}")
     print(f"Global batch size: {args.global_batch_size}")
     print(f"Micro batch size: {args.micro_batch_size}")
     if args.epochs is not None:
         print(f"Epochs: {args.epochs}")
     print(f"Training iterations: {args.train_iters}")
     print(f"Learning rate: {args.lr}")
-    print(f"Tensor parallel size: {args.tensor_parallel_size}")
-    print(f"Pipeline parallel size: {args.pipeline_parallel_size}")
+    print(f"Tensor model parallel size: {args.tensor_model_parallel_size}")
+    print(f"Pipeline model parallel size: {args.pipeline_model_parallel_size}")
     print(f"Context parallel size: {args.context_parallel_size}")
-    print(f"Expert parallel size: {args.expert_parallel_size}")
+    print(f"Expert model parallel size: {args.expert_model_parallel_size}")
+    print(f"Expert tensor parallel size: {args.expert_tensor_parallel_size or args.tensor_model_parallel_size}")
     print(f"Sequence parallel: {args.sequence_parallel}")
     print(f"Output directory: {args.output_dir}")
     if args.wandb_project:
