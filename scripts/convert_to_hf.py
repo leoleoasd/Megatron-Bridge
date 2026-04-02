@@ -222,51 +222,24 @@ def convert_checkpoint(
             strict=False,
         )
     
-    # Copy tokenizer files directly from original HF model (save_pretrained strips metadata)
-    logger.info("Copying tokenizer from original HuggingFace model...")
+    logger.info("Exporting tokenizer from original HuggingFace model...")
     try:
-        import json
-        import shutil
-        from huggingface_hub import snapshot_download
+        from transformers import AutoTokenizer
         
-        source_path = Path(hf_model_id)
-        if not source_path.is_dir():
-            source_path = Path(snapshot_download(
-                hf_model_id,
-                allow_patterns=["tokenizer*", "special_tokens_map*", "added_tokens*",
-                                "vocab*", "merges*", "generation_config*"],
-            ))
-        
-        for fname in ["tokenizer_config.json", "tokenizer.json", "special_tokens_map.json",
-                       "added_tokens.json", "vocab.json", "merges.txt", "generation_config.json"]:
-            src = source_path / fname
-            if src.exists():
-                shutil.copy2(src, hf_output_path / fname)
+        tokenizer = AutoTokenizer.from_pretrained(hf_model_id, trust_remote_code=True)
         
         if use_original_chat_template:
             logger.info("Keeping original chat template from base model")
-            chat_jinja = source_path / "chat_template.jinja"
-            if chat_jinja.exists():
-                shutil.copy2(chat_jinja, hf_output_path / "chat_template.jinja")
         else:
             ckpt_chat_template_jinja = checkpoint_path / "tokenizer" / "chat_template.jinja"
             if ckpt_chat_template_jinja.exists():
                 logger.info("Using chat template from checkpoint")
-                chat_template = ckpt_chat_template_jinja.read_text()
+                tokenizer.chat_template = ckpt_chat_template_jinja.read_text()
             else:
                 logger.info("No chat template in checkpoint, clearing")
-                chat_template = None
-            
-            tc_path = hf_output_path / "tokenizer_config.json"
-            with open(tc_path, "r") as f:
-                tc = json.load(f)
-            if chat_template is not None:
-                tc["chat_template"] = chat_template
-            else:
-                tc.pop("chat_template", None)
-            with open(tc_path, "w") as f:
-                json.dump(tc, f, indent=4, ensure_ascii=False)
+                tokenizer.chat_template = None
         
+        tokenizer.save_pretrained(hf_output_path)
         logger.info("Saved tokenizer to output directory")
     except Exception as e:
         logger.warning(f"Failed to export tokenizer: {e}")
