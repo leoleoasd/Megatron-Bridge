@@ -142,87 +142,6 @@ class TqdmProgressCallback(Callback):
             self.pbar.close()
 
 
-class WandbLoggingCallback(Callback):
-    """Callback to log metrics to Weights & Biases."""
-
-    def __init__(self, project: str, run_name: str = None, config: dict = None):
-        """Initialize wandb logging callback.
-
-        Args:
-            project: W&B project name
-            run_name: Optional run name
-            config: Optional config dict to log
-        """
-        self.project = project
-        self.run_name = run_name
-        self.config = config or {}
-        self.wandb_run = None
-
-    def on_train_start(self, context: CallbackContext) -> None:
-        """Initialize wandb at training start (rank 0 only)."""
-        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-        if rank == 0:
-            try:
-                import wandb
-
-                self.wandb_run = wandb.init(
-                    project=self.project,
-                    name=self.run_name,
-                    config=self.config,
-                    resume="allow",
-                )
-                print(f"W&B run initialized: {wandb.run.url}")
-            except Exception as e:
-                print(f"Failed to initialize W&B: {e}")
-                self.wandb_run = None
-
-    def on_train_step_end(self, context: CallbackContext) -> None:
-        """Log metrics to wandb after each training step."""
-        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-        if rank == 0 and self.wandb_run is not None:
-            try:
-                import wandb
-
-                step = context.state.train_state.step
-                metrics = {"iteration": step}
-
-                # Log losses
-                if context.loss_dict:
-                    for key, val in context.loss_dict.items():
-                        if hasattr(val, "item"):
-                            val = val.item()
-                        # Convert key to wandb-friendly format
-                        wandb_key = f"train/{key.replace(' ', '_')}"
-                        metrics[wandb_key] = val
-
-                # Log gradient norm if available
-                if context.grad_norm is not None:
-                    metrics["train/grad_norm"] = context.grad_norm
-
-                # Log learning rate
-                if context.scheduler is not None:
-                    try:
-                        lr = context.scheduler.get_lr()
-                        metrics["train/learning_rate"] = lr
-                    except Exception:
-                        pass
-
-                wandb.log(metrics, step=step)
-            except Exception as e:
-                # Don't fail training on wandb errors
-                pass
-
-    def on_train_end(self, context: CallbackContext) -> None:
-        """Finish wandb run at training end."""
-        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-        if rank == 0 and self.wandb_run is not None:
-            try:
-                import wandb
-
-                wandb.finish()
-            except Exception:
-                pass
-
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
@@ -416,7 +335,7 @@ def parse_args() -> argparse.Namespace:
         "--save-interval",
         type=int,
         default=100,
-        help="Save checkpoint every N iterations (default: 100)",
+        help="Save checkpoint every N iterations, or every N epochs when --epochs is used (default: 100)",
     )
     ckpt_group.add_argument(
         "--resume-from",
@@ -676,9 +595,12 @@ def main() -> None:
         if steps_per_epoch == 0:
             steps_per_epoch = 1
         args.train_iters = calculate_train_iters(num_samples, args.global_batch_size, args.epochs)
+        # When training by epochs, interpret --save-interval as every N epochs
+        args.save_interval = args.save_interval * steps_per_epoch
         print(f"Dataset size: {num_samples} samples")
         print(f"Steps per epoch: {steps_per_epoch}")
         print(f"Training for {args.epochs} epochs = {args.train_iters} iterations")
+        print(f"Save interval: every {args.save_interval // steps_per_epoch} epoch(s) = {args.save_interval} iterations")
 
     # Validate parallelism settings
     if args.sequence_parallel and args.tensor_model_parallel_size <= 1:
@@ -704,32 +626,6 @@ def main() -> None:
             TqdmProgressCallback(
                 total_iters=args.train_iters,
                 log_interval=1,
-            )
-        )
-
-    # Add wandb callback if project is specified
-    if args.wandb_project:
-        wandb_config = {
-            "model": args.model,
-            "data_path": args.data_path,
-            "seq_length": config.dataset.seq_length,
-            "global_batch_size": args.global_batch_size,
-            "micro_batch_size": args.micro_batch_size,
-            "epochs": args.epochs,
-            "train_iters": args.train_iters,
-            "learning_rate": args.lr,
-            "tensor_model_parallel_size": args.tensor_model_parallel_size,
-            "pipeline_model_parallel_size": args.pipeline_model_parallel_size,
-            "context_parallel_size": args.context_parallel_size,
-            "expert_model_parallel_size": args.expert_model_parallel_size,
-            "expert_tensor_parallel_size": args.expert_tensor_parallel_size,
-            "sequence_parallel": args.sequence_parallel,
-        }
-        callbacks.append(
-            WandbLoggingCallback(
-                project=args.wandb_project,
-                run_name=args.wandb_run_name,
-                config=wandb_config,
             )
         )
 
