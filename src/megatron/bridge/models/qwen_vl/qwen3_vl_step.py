@@ -250,6 +250,15 @@ def forward_step(
     # Qwen3VL model need the original input and do cp and sp split in model.forward.
     pack_sequences_in_batch = getattr(state.cfg.dataset, "pack_sequences_in_batch", False)
 
+    # Force-padding to config.seq_length is correct ONLY when in-batch packing is
+    # enabled, because the THD-pack path conveys the padding scheme to the model
+    # via packed_seq_params. Without packing, training/finetuning.py:prepare_finetuning_batch
+    # already sets the per-batch dynamic seq_length used by the PP scheduler from the
+    # actual batch shape; padding here to a different (larger) seq_length leaves the
+    # model's RoPE freqs and the PP recv buffer at inconsistent lengths and crashes
+    # in attention with "size of tensor a (real_len) must match tensor b (seq_length)".
+    # Original line was:
+    #   force_to_pad_to_seq_len=this_pg_collection.pp.size() > 1 or this_pg_collection.ep.size() > 1
     tokens, labels, loss_mask, attention_mask, position_ids, packed_seq_params = pack_or_pad_batch_sequences(
         tokens,
         labels,
@@ -258,7 +267,8 @@ def forward_step(
         position_ids,
         this_pg_collection,
         use_fp8_padding=True,
-        force_to_pad_to_seq_len=this_pg_collection.pp.size() > 1 or this_pg_collection.ep.size() > 1,
+        force_to_pad_to_seq_len=pack_sequences_in_batch
+        and (this_pg_collection.pp.size() > 1 or this_pg_collection.ep.size() > 1),
         seq_length=config.seq_length,
     )
     forward_args = {
